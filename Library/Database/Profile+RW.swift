@@ -7,7 +7,15 @@ public extension Profile {
         #endif
         switch type {
         case .local, .remote:
-            return try String(contentsOf: FilePath.sharedDirectory.appendingPathComponent(path))
+            try Profile.restoreProfileFileIfNeeded(profileID: id, path: path)
+            let url = FilePath.sharedDirectory.appendingPathComponent(path)
+            let content = try String(contentsOf: url)
+            if let repaired = Profile.normalizedMITMRuntimeContent(content) {
+                try repaired.write(to: url, atomically: true, encoding: .utf8)
+                updateFilesMirror(content: repaired)
+                return repaired
+            }
+            return content
         case .icloud:
             return try String(contentsOf: FilePath.iCloudDirectory.appendingPathComponent(path))
         }
@@ -23,19 +31,32 @@ public extension Profile {
         case .icloud:
             try content.write(to: FilePath.iCloudDirectory.appendingPathComponent(path), atomically: true, encoding: .utf8)
         }
+        updateFilesMirror(content: content)
     }
 
     func readAsync() async throws -> String {
         let type = type
         let path = path
-        return try await BlockingIO.run {
+        let profileID = id
+        let result: (String, Bool) = try await BlockingIO.run {
             switch type {
             case .local, .remote:
-                return try String(contentsOf: FilePath.sharedDirectory.appendingPathComponent(path))
+                try Profile.restoreProfileFileIfNeeded(profileID: profileID, path: path)
+                let url = FilePath.sharedDirectory.appendingPathComponent(path)
+                let content = try String(contentsOf: url)
+                if let repaired = Profile.normalizedMITMRuntimeContent(content) {
+                    try repaired.write(to: url, atomically: true, encoding: .utf8)
+                    return (repaired, true)
+                }
+                return (content, false)
             case .icloud:
-                return try String(contentsOf: FilePath.iCloudDirectory.appendingPathComponent(path))
+                return (try String(contentsOf: FilePath.iCloudDirectory.appendingPathComponent(path)), false)
             }
         }
+        if result.1 {
+            updateFilesMirror(content: result.0)
+        }
+        return result.0
     }
 
     func writeAsync(_ content: String) async throws {
@@ -50,5 +71,6 @@ public extension Profile {
                 try content.write(to: FilePath.iCloudDirectory.appendingPathComponent(path), atomically: true, encoding: .utf8)
             }
         }
+        updateFilesMirror(content: content)
     }
 }

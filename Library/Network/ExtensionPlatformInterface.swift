@@ -668,6 +668,14 @@ public class ExtensionPlatformInterface: NSObject, LibboxPlatformInterfaceProtoc
         nil
     }
 
+    public func usePlatformAutoRedirect() -> Bool {
+        false
+    }
+
+    public func createAutoRedirect(_: Data?, handler _: (any LibboxAutoRedirectHandlerProtocol)?) throws -> any LibboxAutoRedirectSessionProtocol {
+        throw NSError(domain: "ExtensionPlatformInterface", code: 1, userInfo: [NSLocalizedDescriptionKey: "Platform auto redirect is not supported"])
+    }
+
     public func usePlatformShell() -> Bool {
         #if os(macOS)
             return Variant.useSystemExtension

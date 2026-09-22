@@ -28,6 +28,14 @@ public struct ProfileActionToolbar: View {
     #if os(iOS) || os(tvOS)
         private var iosBody: some View {
             Section("Action") {
+                #if os(iOS)
+                    FormNavigationLink {
+                        MITMSettingsView(profileID: profile.id!, readOnly: false)
+                    } label: {
+                        Label("MITM Settings", systemImage: "shield.lefthalf.filled")
+                            .foregroundColor(.accentColor)
+                    }
+                #endif
                 if profile.type != .remote {
                     FormNavigationLink {
                         EditProfileContentView(EditProfileContentView.Context(profileID: profile.id!, readOnly: false))

@@ -1,0 +1,80 @@
+{
+  "log": {
+    "level": "debug",
+    "timestamp": true
+  },
+  "dns": {
+    "servers": [
+      {
+        "type": "tls",
+        "server": "8.8.8.8"
+      }
+    ]
+  },
+  "inbounds": [
+    {
+      "type": "tun",
+      "tag": "tun-in",
+      "address": [
+        "172.19.0.1/30",
+        "fdfe:dcba:9876::1/126"
+      ],
+      "auto_route": true
+    }
+  ],
+  "outbounds": [
+    {
+      "type": "direct",
+      "tag": "direct"
+    }
+  ],
+  "certificate": {
+    "tls_decryption": {
+      "enabled": true,
+      "key_pair_p12": "GENERATED_BY_Scripts_generate-mitm-ca",
+      "key_pair_p12_password": "GENERATED_BY_Scripts_generate-mitm-ca"
+    }
+  },
+  "mitm": {
+    "enabled": true,
+    "http2_enabled": true
+  },
+  "route": {
+    "rules": [
+      {
+        "action": "sniff"
+      },
+      {
+        "type": "logical",
+        "mode": "or",
+        "rules": [
+          {
+            "network": "udp",
+            "port": 53
+          },
+          {
+            "protocol": "dns"
+          }
+        ],
+        "action": "hijack-dns"
+      },
+      {
+        "action": "resolve"
+      },
+      {
+        "domain": "example.com",
+        "action": "route-options",
+        "mitm": {
+          "enabled": true,
+          "print": true
+        }
+      }
+    ],
+    "auto_detect_interface": true
+  },
+  "experimental": {
+    "clash_api": {
+      "external_controller": "127.0.0.1:9090"
+    }
+  }
+}

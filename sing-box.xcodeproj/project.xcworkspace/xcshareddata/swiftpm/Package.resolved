@@ -1,5 +1,5 @@
 {
-  "originHash" : "c0c12907f3950ce6a9bd3abea1b6c51ac1d2d788773fd6cfc8517fb243b08989",
+  "originHash" : "9e5cefe9ae1dc4b0f44c11b705b4d35625979d811c970fabc6bbcdbf82f6d635",
   "pins" : [
     {
       "identity" : "binarycodable",
@@ -78,8 +78,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/Lakr233/libghostty-spm",
       "state" : {
-        "revision" : "356f730bec03281fc7b83666a129b0246137ea26",
-        "version" : "1.4.0"
+        "revision" : "7e45d27160f9b34aca9ca5c9820e9207482f9f04",
+        "version" : "1.6.20260909"
       }
     },
     {

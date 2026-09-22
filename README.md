@@ -6,6 +6,16 @@ Experimental iOS/macOS/tvOS client for sing-box, the universal proxy platform.
 
 [SFI](https://sing-box.sagernet.org/installation/clients/sfi/) | [SFM](https://sing-box.sagernet.org/installation/clients/sfm/)
 
+This tree builds the Apple client against an MITM-enabled
+`Libbox.xcframework`: sing-box `v1.15.0-alpha.6` plus the Surge MITM port
+and its HTTP/1.1, HTTP/2, rewrite-pipeline, Script Hub, body-codec and
+configuration-safety fixes (`Patches/mitm-1.15.patch`).
+
+- Build the MITM core: `./Scripts/build-mitm-libbox.sh`
+- Generate a private MITM CA and ready-to-import profile: `./Scripts/generate-mitm-ca.sh`
+- Build a signed IPA with the local signing assets: `./Scripts/build-ipa.sh`
+- Chinese usage guide: [`docs/MITM_GUIDE.zh-CN.md`](docs/MITM_GUIDE.zh-CN.md)
+
 ## License
 
 ```

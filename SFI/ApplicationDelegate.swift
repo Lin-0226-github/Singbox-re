@@ -108,6 +108,7 @@ class ApplicationDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCe
             }
             registerFileProviderDomain()
         }
+        await Profile.backfillFilesMirrors()
     }
 
     @available(iOS 16.0, *)

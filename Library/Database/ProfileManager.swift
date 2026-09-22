@@ -7,6 +7,7 @@ public enum ProfileManager {
         try await Database.sharedWriter.write { db in
             try profile.insert(db, onConflict: .fail)
         }
+        profile.updateFilesMirror()
     }
 
     public nonisolated static func get(_ profileID: Int64) async throws -> Profile? {
@@ -25,26 +26,36 @@ public enum ProfileManager {
         _ = try await Database.sharedWriter.write { db in
             try profile.delete(db)
         }
+        profile.removeFilesMirror()
     }
 
     public nonisolated static func delete(by id: Int64) async throws {
         _ = try await Database.sharedWriter.write { db in
             try Profile.deleteOne(db, id: id)
         }
+        Profile.removeFilesMirror(profileID: id)
     }
 
     public nonisolated static func delete(_ profileList: [Profile]) async throws -> Int {
-        try await Database.sharedWriter.write { db in
+        let count = try await Database.sharedWriter.write { db in
             try Profile.deleteAll(db, keys: profileList.map {
                 ["id": $0.id!]
             })
         }
+        for profile in profileList {
+            profile.removeFilesMirror()
+        }
+        return count
     }
 
     public nonisolated static func delete(by id: [Int64]) async throws -> Int {
-        try await Database.sharedWriter.write { db in
+        let count = try await Database.sharedWriter.write { db in
             try Profile.deleteAll(db, ids: id)
         }
+        for profileID in id {
+            Profile.removeFilesMirror(profileID: profileID)
+        }
+        return count
     }
 
     public nonisolated static func update(_ profile: Profile) async throws {

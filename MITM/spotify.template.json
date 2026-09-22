@@ -1,0 +1,166 @@
+{
+  "log": {
+    "level": "info",
+    "timestamp": true
+  },
+  "dns": {
+    "servers": [
+      {
+        "type": "tls",
+        "server": "8.8.8.8"
+      }
+    ]
+  },
+  "inbounds": [
+    {
+      "type": "tun",
+      "tag": "tun-in",
+      "address": [
+        "172.19.0.1/30",
+        "fdfe:dcba:9876::1/126"
+      ],
+      "auto_route": true
+    }
+  ],
+  "outbounds": [
+    {
+      "type": "direct",
+      "tag": "direct"
+    }
+  ],
+  "certificate": {
+    "tls_decryption": {
+      "enabled": true,
+      "key_pair_p12": "GENERATED_BY_Scripts_generate-mitm-ca",
+      "key_pair_p12_password": "GENERATED_BY_Scripts_generate-mitm-ca"
+    }
+  },
+  "mitm": {
+    "enabled": true,
+    "http2_enabled": true
+  },
+  "scripts": [
+    {
+      "type": "surge",
+      "tag": "spotify-search",
+      "source": "remote",
+      "url": "https://raw.githubusercontent.com/uki0xc/ukix/refs/heads/main/js/Spotify-search.js",
+      "update_interval": "1d"
+    },
+    {
+      "type": "surge",
+      "tag": "spotify-scroll",
+      "source": "remote",
+      "url": "https://raw.githubusercontent.com/uki0xc/ukix/refs/heads/main/js/Spotify-scroll.js",
+      "update_interval": "1d"
+    },
+    {
+      "type": "surge",
+      "tag": "spotify-gabo",
+      "source": "remote",
+      "url": "https://raw.githubusercontent.com/uki0xc/ukix/refs/heads/main/js/Spotify-gabo.js",
+      "update_interval": "1d"
+    },
+    {
+      "type": "surge",
+      "tag": "spotify-proto",
+      "source": "remote",
+      "url": "https://raw.githubusercontent.com/uki0xc/ukix/refs/heads/main/js/Spotify-proto.js",
+      "update_interval": "1d"
+    }
+  ],
+  "route": {
+    "rules": [
+      {
+        "action": "sniff"
+      },
+      {
+        "domain_suffix": "spotify.com",
+        "protocol": "quic",
+        "action": "reject"
+      },
+      {
+        "domain": "aet.spotify.com",
+        "action": "reject"
+      },
+      {
+        "type": "logical",
+        "mode": "or",
+        "rules": [
+          {
+            "network": "udp",
+            "port": 53
+          },
+          {
+            "protocol": "dns"
+          }
+        ],
+        "action": "hijack-dns"
+      },
+      {
+        "action": "resolve"
+      },
+      {
+        "type": "logical",
+        "mode": "or",
+        "rules": [
+          {
+            "domain": "spclient.wg.spotify.com"
+          },
+          {
+            "domain_regex": ".*-spclient\\.spotify\\.com$"
+          }
+        ],
+        "action": "route-options",
+        "mitm": {
+          "enabled": true,
+          "surge_header_rewrite": [
+            "http-request ^https://(spclient\\.wg\\.spotify\\.com|.*-spclient\\.spotify\\.com(:443)?)/user-customization-service/v1/customize$ header-del if-none-match"
+          ],
+          "surge_url_rewrite": [
+            "^https://(spclient\\.wg|.*-spclient)\\.spotify\\.com(:443)?/pendragon _ reject",
+            "^https://.*-spclient\\.spotify\\.com(:443)?/pam-view-service/ _ reject",
+            "^https://.*37i9dQZF1EYkqdzj48dyYq _ reject"
+          ],
+          "surge_script": [
+            {
+              "tag": "spotify-search",
+              "type": "http-response",
+              "pattern": "^https://(spclient\\.wg\\.spotify\\.com|.*-spclient\\.spotify\\.com(:443)?)/browsita/v./browse",
+              "requires_body": true,
+              "binary_body_mode": true,
+              "max_size": 10485760
+            },
+            {
+              "tag": "spotify-scroll",
+              "type": "http-response",
+              "pattern": "^https://(spclient\\.wg\\.spotify\\.com|.*-spclient\\.spotify\\.com(:443)?)/scrollsita/v./scroll/spotify",
+              "requires_body": true,
+              "binary_body_mode": true,
+              "max_size": 10485760
+            },
+            {
+              "tag": "spotify-gabo",
+              "type": "http-request",
+              "pattern": "^https://(.*-spclient\\.spotify\\.com(:443)?|spclient\\.wg\\.spotify\\.com)/gabo-receiver-service"
+            },
+            {
+              "tag": "spotify-proto",
+              "type": "http-response",
+              "pattern": "^https://(spclient\\.wg\\.spotify\\.com|.*-spclient\\.spotify\\.com(:443)?)/(bootstrap/v1/bootstrap|user-customization-service/v1/customize)$",
+              "requires_body": true,
+              "binary_body_mode": true,
+              "max_size": 10485760
+            }
+          ]
+        }
+      }
+    ],
+    "auto_detect_interface": true
+  },
+  "experimental": {
+    "clash_api": {
+      "external_controller": "127.0.0.1:9090"
+    }
+  }
+}
