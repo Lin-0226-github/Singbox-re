@@ -302,12 +302,73 @@ jobs:
             done
           fi
 
-          GROUP_ID="$(/usr/libexec/PlistBuddy -c 'Print :AppGroupIdentifier' "$APP/Info.plist" 2>/dev/null || true)"
-          echo "AppGroupIdentifier: ${GROUP_ID:-none}"
+          # ---- 关键：展开 entitlements 里的 $(...) 构建变量 ----
+          # 源码里的 entitlements 含 $(APP_GROUP_IDENTIFIER)、$(BASE_PACKAGE_IDENTIFIER)
+          # 等 Xcode 构建变量。正常流程由 Xcode 签名时展开；我们关闭了 Xcode 签名，
+          # 若直接把原始文件交给 codesign，App Group 会变成字面量 "$(APP_GROUP_IDENTIFIER)"，
+          # 导致 App 启动时拿不到共享目录而崩溃。
+          export GROUP_ID="$(/usr/libexec/PlistBuddy -c 'Print :AppGroupIdentifier' "$APP/Info.plist" 2>/dev/null || true)"
+          export BASE_ID="$(/usr/libexec/PlistBuddy -c 'Print :BasePackageIdentifier' "$APP/Info.plist" 2>/dev/null || true)"
+          export BUNDLE_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist" 2>/dev/null || true)"
+          echo "AppGroupIdentifier:     ${GROUP_ID:-none}"
+          echo "BasePackageIdentifier:  ${BASE_ID:-none}"
+          echo "CFBundleIdentifier:     ${BUNDLE_ID:-none}"
+
+          mkdir -p "$WORK/ents"
+          cat > "$WORK/expand.py" <<'PY'
+          import sys, os, re, plistlib
+          src, dst = sys.argv[1], sys.argv[2]
+          vals = {
+              "APP_GROUP_IDENTIFIER": os.environ.get("GROUP_ID", ""),
+              "AppGroupIdentifier": os.environ.get("GROUP_ID", ""),
+              "BASE_PACKAGE_IDENTIFIER": os.environ.get("BASE_ID", ""),
+              "BasePackageIdentifier": os.environ.get("BASE_ID", ""),
+              "PRODUCT_BUNDLE_IDENTIFIER": os.environ.get("BUNDLE_ID", ""),
+              "CFBundleIdentifier": os.environ.get("BUNDLE_ID", ""),
+              "TeamIdentifierPrefix": "",
+          }
+          with open(src, "rb") as f:
+              data = plistlib.load(f)
+          def sub(v):
+              if isinstance(v, str):
+                  return re.sub(r"\$\(([^)]+)\)",
+                                lambda m: vals.get(m.group(1), m.group(0)), v)
+              return v
+          def walk(o):
+              if isinstance(o, dict):
+                  return {k: walk(v) for k, v in o.items()}
+              if isinstance(o, list):
+                  return [walk(v) for v in o]
+              return sub(o)
+          with open(dst, "wb") as f:
+              plistlib.dump(walk(data), f)
+          raw = open(src, encoding="utf-8", errors="ignore").read()
+          left = sorted(set(re.findall(r"\$\(([^)]+)\)", raw)) - set(vals.keys()))
+          if left:
+              print("    未展开的变量:", left)
+          PY
+
+          expand_ent() {  # $1=源文件  $2=目标文件
+            if [ -f "$1" ]; then
+              python3 "$WORK/expand.py" "$1" "$2"
+            fi
+          }
+
+          # 展开所有 entitlement 源文件，后续签名统一用展开后的副本
+          EXPANDED_DIR="$WORK/ents"
+          EXPANDED_LIST=""
+          for f in $ENTS; do
+            out="$EXPANDED_DIR/$(basename "$f")"
+            expand_ent "$f" "$out"
+            EXPANDED_LIST="$EXPANDED_LIST $out"
+          done
+          ENTS="$EXPANDED_LIST"
 
           FINAL_NE="$WORK/ne.entitlements"
           FINAL_APP="$WORK/app.entitlements"
-          if [ -n "$NE_ENT" ]; then FINAL_NE="$NE_ENT"; else
+          if [ -n "$NE_ENT" ]; then
+            FINAL_NE="$WORK/ne.expanded.plist"; expand_ent "$NE_ENT" "$FINAL_NE"
+          else
             printf '%s\n' \
               '<?xml version="1.0" encoding="UTF-8"?>' \
               '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
@@ -317,7 +378,10 @@ jobs:
               "  <key>com.apple.security.application-groups</key><array><string>${GROUP_ID}</string></array>" \
               '</dict></plist>' > "$FINAL_NE"
           fi
-          if [ -n "$APP_ENT" ]; then FINAL_APP="$APP_ENT"; else
+          if [ -n "$APP_ENT" ]; then
+            FINAL_APP="$WORK/app.expanded.plist"
+            expand_ent "$APP_ENT" "$FINAL_APP"
+          else
             printf '%s\n' \
               '<?xml version="1.0" encoding="UTF-8"?>' \
               '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
@@ -333,8 +397,16 @@ jobs:
             done
           fi
 
-          echo "app entitlements: $FINAL_APP"
-          echo "ne  entitlements: $FINAL_NE"
+          echo "--- 展开后的主 App entitlements ---"
+          plutil -p "$FINAL_APP" 2>/dev/null || cat "$FINAL_APP"
+          echo "--- 展开后的 NE entitlements ---"
+          plutil -p "$FINAL_NE" 2>/dev/null || cat "$FINAL_NE"
+
+          # 安全检查：确认没有残留的 $(...) 变量
+          if grep -q '\$(' "$FINAL_APP" 2>/dev/null; then
+            echo "::error::主 App entitlements 仍有未展开变量"
+            exit 1
+          fi
 
           find "$APP" -depth \( -name '*.framework' -o -name '*.dylib' \) -print | while read -r item; do
             codesign --force --sign - --timestamp=none "$item" && echo "signed lib: $item"
@@ -347,7 +419,7 @@ jobs:
               if [ "$(basename "$f" .entitlements)" = "$name" ]; then match="$f"; fi
             done
             case "$name" in
-              *Tunnel*) [ -n "$NE_ENT" ] && match="$NE_ENT" ;;
+              *Tunnel*) [ -n "$NE_ENT" ] && match="$FINAL_NE" ;;
             esac
             codesign --force --sign - --timestamp=none --generate-entitlement-der \
                      --entitlements "$match" "$item" && echo "signed appex: $item <- $match"
