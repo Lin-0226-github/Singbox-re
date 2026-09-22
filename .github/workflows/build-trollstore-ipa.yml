@@ -103,24 +103,63 @@ jobs:
           go install github.com/sagernet/gomobile/cmd/gobind@v0.1.5
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
-      - name: Build MITM Libbox
+      - name: Show core source state
         run: |
           set -eo pipefail
+          cd "$GITHUB_WORKSPACE"
+          echo "Patches 目录:"; ls -la Patches/
+          echo "Core/sing-box HEAD:"; git -C Core/sing-box log -1 --oneline
+          echo "cmd/internal 是否独立 module:"
+          ls -la Core/sing-box/cmd/internal/go.mod 2>/dev/null || echo "  无独立 go.mod（属主模块）"
+          echo "cmd/internal 内容:"; ls Core/sing-box/cmd/internal/ 2>/dev/null || true
+
+      - name: Init gomobile
+        run: |
+          export PATH="$(go env GOPATH)/bin:$PATH"
+          gomobile version || true
+          gomobile init || echo "::warning::gomobile init 返回非零，继续尝试构建"
+
+      - name: Build MITM Libbox
+        run: |
+          set -xo pipefail
           export DEVELOPER_DIR="$(xcode-select -p)"
           export PATH="$(go env GOPATH)/bin:$PATH"
           cd "$GITHUB_WORKSPACE"
 
           echo "==> 应用 MITM 补丁"
           cd Core/sing-box
-          git apply "$GITHUB_WORKSPACE/Patches/mitm-1.15.patch"
+          if git apply --check "$GITHUB_WORKSPACE/Patches/mitm-1.15.patch" 2>/dev/null; then
+            git apply "$GITHUB_WORKSPACE/Patches/mitm-1.15.patch"
+          elif git apply --3way "$GITHUB_WORKSPACE/Patches/mitm-1.15.patch"; then
+            echo "使用 3way 方式应用补丁"
+          elif patch -p1 --forward < "$GITHUB_WORKSPACE/Patches/mitm-1.15.patch"; then
+            echo "使用 patch 命令应用补丁"
+          else
+            echo "::error::MITM 补丁应用失败"
+            exit 1
+          fi
           echo "补丁应用成功"
+          git status --short | head -20
 
           echo "==> 交叉编译 Libbox（耗时较长）"
-          go run ./cmd/internal/build_libbox -target apple -platform ios -debug
+          if [ -f cmd/internal/go.mod ]; then
+            echo "cmd/internal 为独立 module，从该目录执行"
+            ( cd cmd/internal && go run ./build_libbox -target apple -platform ios -debug )
+          else
+            go run ./cmd/internal/build_libbox -target apple -platform ios -debug
+          fi
           cd "$GITHUB_WORKSPACE"
 
+          echo "==> 定位 Libbox.xcframework"
+          SRC="$(find Core/sing-box -maxdepth 4 -type d -name 'Libbox.xcframework' -print -quit)"
+          if [ -z "$SRC" ]; then
+            echo "::error::未找到 Libbox.xcframework"
+            find Core/sing-box -maxdepth 3 -name '*.xcframework' -print || true
+            exit 1
+          fi
+          echo "源: $SRC"
           mkdir -p Libbox.xcframework
-          rsync -a --delete Core/sing-box/Libbox.xcframework/ Libbox.xcframework/
+          rsync -a --delete "$SRC/" Libbox.xcframework/
 
           echo "==> 校验 MITM 标记"
           BIN="Libbox.xcframework/ios-arm64/Libbox.framework/Libbox"
