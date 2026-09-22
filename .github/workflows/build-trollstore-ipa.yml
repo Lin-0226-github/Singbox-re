@@ -17,6 +17,10 @@ on:
         description: "runner 镜像，macos-26 或 macos-15"
         type: string
         default: "macos-26"
+      min_ios:
+        description: "强制最低 iOS 版本，如 15.0；留空用项目默认（依赖若要求更高会编译失败）"
+        type: string
+        default: ""
       marketing_version:
         description: "App 版本号"
         type: string
@@ -224,6 +228,12 @@ jobs:
         run: |
           set -eo pipefail
           cd "$GITHUB_WORKSPACE"
+          MIN_IOS="${{ inputs.min_ios }}"
+          DEPLOY_ARGS=()
+          if [ -n "$MIN_IOS" ]; then
+            echo "强制最低 iOS 版本: $MIN_IOS"
+            DEPLOY_ARGS=("IPHONEOS_DEPLOYMENT_TARGET=$MIN_IOS")
+          fi
           xcodebuild \
             -project sing-box.xcodeproj \
             -scheme SFI \
@@ -234,6 +244,7 @@ jobs:
             -skipMacroValidation \
             MARKETING_VERSION="${{ inputs.marketing_version || '1.15.0' }}" \
             CURRENT_PROJECT_VERSION="${{ inputs.build_version || '11' }}" \
+            "${DEPLOY_ARGS[@]}" \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             AD_HOC_CODE_SIGNING_ALLOWED=YES \
@@ -243,11 +254,28 @@ jobs:
       # ------------------------------------------------------------------
       # ad-hoc 签名并打包
       # ------------------------------------------------------------------
+      - name: Report app requirements
+        run: |
+          set -eo pipefail
+          cd "$GITHUB_WORKSPACE"
+          APP="$(find "$GITHUB_WORKSPACE/build/DerivedData-trollstore/Build/Products/Release-iphoneos" -maxdepth 1 -name '*.app' -print -quit)"
+          if [ -z "$APP" ]; then
+            echo "::error::未找到 .app，无法读取版本要求"
+            exit 1
+          fi
+          echo "===== 安装要求 ====="
+          echo "App:               $(basename "$APP")"
+          echo "Bundle ID:         $(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist" 2>/dev/null || true)"
+          echo "版本:              $(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Info.plist" 2>/dev/null || true)"
+          echo "MinimumOSVersion:  $(/usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' "$APP/Info.plist" 2>/dev/null || true)"
+          echo "支持的架构:        $(lipo -info "$APP/$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Info.plist" 2>/dev/null)" 2>/dev/null || true)"
+          echo "==================="
+
       - name: Ad-hoc sign and package IPA
         run: |
           set -eo pipefail
           cd "$GITHUB_WORKSPACE"
-          APP="$(find build/DerivedData-trollstore/Build/Products/Release-iphoneos -maxdepth 1 -name '*.app' -print -quit)"
+          APP="$(find "$GITHUB_WORKSPACE/build/DerivedData-trollstore/Build/Products/Release-iphoneos" -maxdepth 1 -name '*.app' -print -quit)"
           if [ -z "$APP" ] || [ ! -d "$APP" ]; then
             echo "::error::未找到构建产物 .app"
             exit 1
