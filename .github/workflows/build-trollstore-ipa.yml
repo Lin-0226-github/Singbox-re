@@ -10,9 +10,13 @@ on:
   workflow_dispatch:
     inputs:
       xcode_version:
-        description: "Xcode 版本，如 16.2；留空用 runner 默认"
+        description: "Xcode 版本，如 26.3；留空则自动选镜像上最新"
         type: string
         default: ""
+      runner:
+        description: "runner 镜像，macos-26 或 macos-15"
+        type: string
+        default: "macos-26"
       marketing_version:
         description: "App 版本号"
         type: string
@@ -34,7 +38,10 @@ on:
 jobs:
   build:
     name: Build and package IPA
-    runs-on: macos-15
+    # 项目依赖 libghostty-spm，其中用到了 UIGlassEffect（iOS 26 液态玻璃 API）。
+    # Xcode 16.4 的 iOS 18.5 SDK 里没有该符号，会报 cannot find 'UIGlassEffect' in scope。
+    # 因此默认使用 macos-26 镜像（默认 Xcode 26.5/26.6，带 iOS 26 SDK）。
+    runs-on: ${{ inputs.runner || 'macos-26' }}
     timeout-minutes: 300
 
     steps:
@@ -45,11 +52,29 @@ jobs:
           persist-credentials: false
 
       - name: Select Xcode
-        if: github.event_name == 'workflow_dispatch' && inputs.xcode_version != ''
         run: |
-          sudo xcode-select -s "/Applications/Xcode_${{ inputs.xcode_version }}.app/Contents/Developer"
+          set -eo pipefail
+          echo "镜像上可用的 Xcode:"
+          ls -d /Applications/Xcode_*.app 2>/dev/null || echo "  未找到 Xcode_*.app"
+
+          if [ "${{ inputs.xcode_version }}" != "" ]; then
+            TARGET="/Applications/Xcode_${{ inputs.xcode_version }}.app/Contents/Developer"
+            echo "按输入指定: $TARGET"
+          else
+            # 自动选择版本号最大的 Xcode（确保拿到带 iOS 26 SDK 的版本）
+            NEWEST="$(ls -d /Applications/Xcode_*.app 2>/dev/null | sort -V | tail -1)"
+            TARGET="${NEWEST}/Contents/Developer"
+            echo "自动选择最新: ${NEWEST}"
+          fi
+
+          if [ -d "$TARGET" ]; then
+            sudo xcode-select -s "$TARGET"
+          else
+            echo "::warning::路径不存在，沿用镜像默认: $TARGET"
+          fi
           sudo xcodebuild -license accept || true
           xcodebuild -version
+          echo "SDK:"; xcrun --sdk iphoneos --show-sdk-path
 
       - name: Show toolchain
         run: |
