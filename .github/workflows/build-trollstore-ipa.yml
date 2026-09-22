@@ -2,15 +2,13 @@ name: Build SFI IPA TrollStore
 
 # 为 Reukix/Singbox-re 构建可在 TrollStore / 越狱环境安装的 IPA。
 # 不需要 Apple 开发者账号，不需要 .p12 证书，不需要 .mobileprovision 描述文件。
+#
+# 注意：不使用 actions/checkout 的 submodules 功能，也不调用 Scripts/build-mitm-libbox.sh，
+# 改为在本工作流内直接克隆依赖并编译内核，避免 fork 仓库上 git submodule 拉取失败的问题。
 
 on:
-  # 支持手动触发（Actions 页面点 Run workflow）
   workflow_dispatch:
     inputs:
-      build_core:
-        description: "从源码构建 MITM 版 Libbox.xcframework（必须开启，耗时约 20-50 分钟）"
-        type: boolean
-        default: true
       xcode_version:
         description: "Xcode 版本，如 16.2；留空用 runner 默认"
         type: string
@@ -27,7 +25,6 @@ on:
         description: "额外注入 get-task-allow（一般不需要）"
         type: boolean
         default: false
-  # 推送到 main 分支且改动了本工作流时自动触发
   push:
     branches:
       - main
@@ -41,20 +38,11 @@ jobs:
     timeout-minutes: 300
 
     steps:
-      - name: Checkout with submodules
+      - name: Checkout (no submodules)
         uses: actions/checkout@v4
         with:
-          submodules: recursive
-          fetch-depth: 0
-
-      - name: Init submodules manually if needed
-        run: |
-          git submodule sync --recursive || true
-          git submodule update --init --recursive || true
-          echo "--- submodule status ---"
-          git submodule status --recursive || true
-          echo "--- Core/sing-box ---"
-          ls -la Core/sing-box 2>/dev/null | head -20 || echo "Core/sing-box 不存在"
+          fetch-depth: 1
+          persist-credentials: false
 
       - name: Select Xcode
         if: github.event_name == 'workflow_dispatch' && inputs.xcode_version != ''
@@ -68,11 +56,41 @@ jobs:
           xcodebuild -version
           swift --version
           echo "DEVELOPER_DIR=$(xcode-select -p)"
-          echo "workspace=$GITHUB_WORKSPACE"
 
-      # 下面三步不再设置 if 条件：runner 每次都是全新环境，
-      # MITM 内核必须每次都重新编译。若用 if: inputs.build_core，
-      # 在 push 触发时 inputs 为空会导致这几步被静默跳过。
+      # ------------------------------------------------------------------
+      # 手动准备依赖（替代 git submodule）
+      # ------------------------------------------------------------------
+      - name: Fetch dependencies manually
+        run: |
+          set -eo pipefail
+          export DEVELOPER_DIR="$(xcode-select -p)"
+          cd "$GITHUB_WORKSPACE"
+
+          # 记录仓库锁定的 Runestone commit，保证版本一致
+          RUNE_SHA="$(git rev-parse HEAD:Frameworks/Runestone 2>/dev/null || true)"
+          echo "Runestone pinned: ${RUNE_SHA:-unknown}"
+
+          # 移除子模块配置，后续不再有任何 git submodule 操作
+          rm -f .gitmodules
+          rm -rf Frameworks/Runestone Core/sing-box
+
+          echo "==> 克隆 Runestone"
+          git clone https://github.com/nekohasekai/Runestone.git Frameworks/Runestone
+          if [ -n "$RUNE_SHA" ]; then
+            git -C Frameworks/Runestone checkout -q "$RUNE_SHA" || \
+              echo "::warning::无法切到锁定的 Runestone commit，使用默认分支"
+          fi
+          echo "Runestone: $(git -C Frameworks/Runestone rev-parse --short HEAD)"
+
+          echo "==> 克隆 sing-box 内核"
+          git clone --filter=blob:none https://github.com/SagerNet/sing-box.git Core/sing-box
+          git -C Core/sing-box fetch --depth 1 origin tag v1.15.0-alpha.6
+          git -C Core/sing-box checkout -q v1.15.0-alpha.6
+          echo "sing-box: $(git -C Core/sing-box describe --tags --always)"
+
+      # ------------------------------------------------------------------
+      # 编译 MITM 版 Libbox.xcframework
+      # ------------------------------------------------------------------
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
@@ -87,20 +105,42 @@ jobs:
 
       - name: Build MITM Libbox
         run: |
-          chmod +x Scripts/build-mitm-libbox.sh
-          ./Scripts/build-mitm-libbox.sh
+          set -eo pipefail
+          export DEVELOPER_DIR="$(xcode-select -p)"
+          export PATH="$(go env GOPATH)/bin:$PATH"
+          cd "$GITHUB_WORKSPACE"
 
-      - name: Check Libbox
-        run: |
-          if [ ! -d Libbox.xcframework ]; then
-            echo "::error::Libbox.xcframework not found - MITM 内核编译失败"
-            exit 1
-          fi
+          echo "==> 应用 MITM 补丁"
+          cd Core/sing-box
+          git apply "$GITHUB_WORKSPACE/Patches/mitm-1.15.patch"
+          echo "补丁应用成功"
+
+          echo "==> 交叉编译 Libbox（耗时较长）"
+          go run ./cmd/internal/build_libbox -target apple -platform ios -debug
+          cd "$GITHUB_WORKSPACE"
+
+          mkdir -p Libbox.xcframework
+          rsync -a --delete Core/sing-box/Libbox.xcframework/ Libbox.xcframework/
+
+          echo "==> 校验 MITM 标记"
+          BIN="Libbox.xcframework/ios-arm64/Libbox.framework/Libbox"
+          for m in tls_decryption surge_url_rewrite surge_header_rewrite surge_body_rewrite surge_map_local; do
+            if strings "$BIN" | grep -qF "$m"; then
+              echo "  ok: $m"
+            else
+              echo "::error::MITM 标记缺失: $m"
+              exit 1
+            fi
+          done
           du -sh Libbox.xcframework
 
+      # ------------------------------------------------------------------
+      # 编译 App（关闭 Xcode 自动签名）
+      # ------------------------------------------------------------------
       - name: Build unsigned app
         run: |
-          set -euo pipefail
+          set -eo pipefail
+          cd "$GITHUB_WORKSPACE"
           xcodebuild \
             -project sing-box.xcodeproj \
             -scheme SFI \
@@ -117,37 +157,33 @@ jobs:
             CODE_SIGN_IDENTITY="" \
             build
 
+      # ------------------------------------------------------------------
+      # ad-hoc 签名并打包
+      # ------------------------------------------------------------------
       - name: Ad-hoc sign and package IPA
         run: |
-          set -euo pipefail
-          PROJECT="$GITHUB_WORKSPACE"
+          set -eo pipefail
+          cd "$GITHUB_WORKSPACE"
           APP="$(find build/DerivedData-trollstore/Build/Products/Release-iphoneos -maxdepth 1 -name '*.app' -print -quit)"
           if [ -z "$APP" ] || [ ! -d "$APP" ]; then
-            echo "::error::built .app not found"
+            echo "::error::未找到构建产物 .app"
             exit 1
           fi
           echo "app: $APP"
 
           VER="${{ inputs.marketing_version || '1.15.0' }}"
-          IPA_NAME="sing-box-${VER}-mitm-trollstore.ipa"
-          OUTPUT_IPA="$PROJECT/$IPA_NAME"
+          OUTPUT_IPA="$GITHUB_WORKSPACE/sing-box-${VER}-mitm-trollstore.ipa"
           WORK="$(mktemp -d)"
 
-          # 收集源码中的 entitlements
-          ENTS="$(find "$PROJECT" -name '*.entitlements' -not -path '*/build/*' -not -path "$PROJECT/Core/*" | sort || true)"
-          echo "entitlements files:"
-          echo "$ENTS"
+          ENTS="$(find "$GITHUB_WORKSPACE" -name '*.entitlements' -not -path '*/build/*' -not -path "$GITHUB_WORKSPACE/Core/*" | sort || true)"
+          echo "entitlements:"; echo "$ENTS"
 
           NE_ENT=""
           APP_ENT=""
           for f in $ENTS; do
             b="$(basename "$f")"
-            if [ "$b" = "SFI.entitlements" ] || [ "$b" = "sing-box.entitlements" ]; then
-              APP_ENT="$f"
-            fi
-            if [ -z "$NE_ENT" ] && grep -q 'networkextension' "$f" 2>/dev/null; then
-              NE_ENT="$f"
-            fi
+            if [ "$b" = "SFI.entitlements" ] || [ "$b" = "sing-box.entitlements" ]; then APP_ENT="$f"; fi
+            if [ -z "$NE_ENT" ] && grep -q 'networkextension' "$f" 2>/dev/null; then NE_ENT="$f"; fi
           done
           if [ -z "$APP_ENT" ]; then
             for f in $ENTS; do
@@ -158,7 +194,6 @@ jobs:
           GROUP_ID="$(/usr/libexec/PlistBuddy -c 'Print :AppGroupIdentifier' "$APP/Info.plist" 2>/dev/null || true)"
           echo "AppGroupIdentifier: ${GROUP_ID:-none}"
 
-          # 写出最终 entitlements
           FINAL_NE="$WORK/ne.entitlements"
           FINAL_APP="$WORK/app.entitlements"
           if [ -n "$NE_ENT" ]; then FINAL_NE="$NE_ENT"; else
@@ -190,7 +225,6 @@ jobs:
           echo "app entitlements: $FINAL_APP"
           echo "ne  entitlements: $FINAL_NE"
 
-          # 由内向外 ad-hoc 签名
           find "$APP" -depth \( -name '*.framework' -o -name '*.dylib' \) -print | while read -r item; do
             codesign --force --sign - --timestamp=none "$item" && echo "signed lib: $item"
           done
