@@ -94,14 +94,21 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.24"
+          # 内核源码的 go.mod 要求 go1.25.5，用 1.24 会触发 toolchain 自动下载
+          go-version: "1.25"
+          check-latest: true
           cache: false
 
       - name: Install gomobile
         run: |
-          go install github.com/sagernet/gomobile/cmd/gomobile@v0.1.5
-          go install github.com/sagernet/gomobile/cmd/gobind@v0.1.5
+          # 必须使用 v0.1.12：build_libbox 会传 -tags-not-macos，
+          # 该参数只有 v0.1.12 支持，v0.1.5 会报 flag provided but not defined
+          go install github.com/sagernet/gomobile/cmd/gomobile@v0.1.12
+          go install github.com/sagernet/gomobile/cmd/gobind@v0.1.12
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+          export PATH="$(go env GOPATH)/bin:$PATH"
+          which gomobile
+          gomobile version || true
 
       - name: Show core source state
         run: |
